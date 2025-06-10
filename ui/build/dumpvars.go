@@ -137,6 +137,12 @@ func dumpMakeVars(ctx Context, config Config, goals, vars []string, write_soong_
 		}
 	}
 	if ctx.Metrics != nil {
+		// Also include TARGET_RELEASE in the metrics.  Do this first
+		// so that it gets overwritten if dumpvars ever spits it out.
+		if release, found := os.LookupEnv("TARGET_RELEASE"); found {
+			ctx.Metrics.SetMetadataMetrics(
+				map[string]string{"TARGET_RELEASE": release})
+		}
 		ctx.Metrics.SetMetadataMetrics(ret)
 	}
 
@@ -174,7 +180,7 @@ var BannerVars = []string{
 	"PRODUCT_SOONG_NAMESPACES",
 }
 
-func Banner(make_vars map[string]string) string {
+func Banner(config Config, make_vars map[string]string) string {
 	b := &bytes.Buffer{}
 
 	fmt.Fprintln(b, "============================================")
@@ -183,6 +189,12 @@ func Banner(make_vars map[string]string) string {
 			fmt.Fprintf(b, "%s=%s\n", name, make_vars[name])
 		}
 	}
+	if config.skipKatiControlledByFlags {
+		fmt.Fprintf(b, "SOONG_ONLY=%t\n", config.soongOnlyRequested)
+	} else { // default for this product
+		fmt.Fprintf(b, "SOONG_ONLY=%t\n", make_vars["PRODUCT_SOONG_ONLY"] == "true")
+	}
+
 	fmt.Fprint(b, "============================================")
 
 	return b.String()
@@ -248,6 +260,8 @@ func runMakeProductConfig(ctx Context, config Config) {
 		// `true` will relegate missing outputs to warnings.
 		"BUILD_BROKEN_MISSING_OUTPUTS",
 
+		"PRODUCT_SOONG_ONLY",
+
 		// Not used, but useful to be in the soong.log
 		"TARGET_BUILD_TYPE",
 		"HOST_ARCH",
@@ -280,6 +294,7 @@ func runMakeProductConfig(ctx Context, config Config) {
 		"BUILD_BROKEN_USES_BUILD_SHARED_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_STATIC_JAVA_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_STATIC_LIBRARY",
+		"RELEASE_BUILD_EXECUTION_METRICS",
 	}, exportEnvVars...), BannerVars...)
 
 	makeVars, err := dumpMakeVars(ctx, config, config.Arguments(), allVars, true, "")
@@ -287,13 +302,8 @@ func runMakeProductConfig(ctx Context, config Config) {
 		ctx.Fatalln("Error dumping make vars:", err)
 	}
 
-	env := config.Environment()
-	// Print the banner like make does
-	if !env.IsEnvTrue("ANDROID_QUIET_BUILD") {
-		fmt.Fprintln(ctx.Writer, Banner(makeVars))
-	}
-
 	// Populate the environment
+	env := config.Environment()
 	for _, name := range exportEnvVars {
 		if makeVars[name] == "" {
 			env.Unset(name)
@@ -314,4 +324,17 @@ func runMakeProductConfig(ctx Context, config Config) {
 	config.SetBuildBrokenNinjaUsesEnvVars(strings.Fields(makeVars["BUILD_BROKEN_NINJA_USES_ENV_VARS"]))
 	config.SetSourceRootDirs(strings.Fields(makeVars["PRODUCT_SOURCE_ROOT_DIRS"]))
 	config.SetBuildBrokenMissingOutputs(makeVars["BUILD_BROKEN_MISSING_OUTPUTS"] == "true")
+
+	if !config.skipKatiControlledByFlags {
+		if makeVars["PRODUCT_SOONG_ONLY"] == "true" {
+			config.soongOnlyRequested = true
+			config.skipKati = true
+			config.skipKatiNinja = true
+		}
+	}
+
+	// Print the banner like make did
+	if !env.IsEnvTrue("ANDROID_QUIET_BUILD") {
+		fmt.Fprintln(ctx.Writer, Banner(config, makeVars))
+	}
 }
